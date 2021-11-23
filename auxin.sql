@@ -50,11 +50,9 @@ CREATE TABLE inbox (id SERIAL PRIMARY KEY, msg TEXT, sender TEXT, ts TEXT, unrea
 
 CREATE OR REPLACE FUNCTION receive()
 RETURNS table (id integer, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN) AS $$ 
-    BEGIN
         COPY inbox (sender, msg, ts) 
         FROM PROGRAM '/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 receive | jq ".[] | [.remote_address.address.Both[0], .content.text_message, .timestamp] | select(.[1] != null) | @csv"'
-        ; --WITH FORMAT csv;
+        DELIMITER ',';
         UPDATE inbox SET unread=FALSE WHERE inbox.unread=TRUE RETURNING *;
-    END;
-$$ LANGUAGE plpgsql VOLATILE;
+$$ LANGUAGE SQL;
 
