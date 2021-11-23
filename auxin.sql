@@ -8,7 +8,7 @@ RETURNS text AS $$
         output TEXT;
     BEGIN
         CREATE TEMP TABLE tmp (content text);
-        EXECUTE E'COPY tmp FROM PROGRAM ''' || program || '''';
+        EXECUTE format('COPY tmp FROM PROGRAM %s;', quote_literal(program));
         SELECT content FROM tmp INTO output;
         DROP TABLE tmp;
         RETURN output;
@@ -22,10 +22,11 @@ LANGUAGE plpgsql
 AS $BODY$
 BEGIN 
     NEW.ts := get_output(
-        '/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 send -m "' 
-        || NEW.msg
-        || '" ' 
-        || quote_ident(NEW.dest)
+        format(
+            '/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 send -m "%s" %s',
+            NEW.msg, 
+            quote_ident(NEW.dest)
+        )
     );
     RETURN NEW;
 END;
@@ -38,21 +39,13 @@ DROP TABLE IF EXISTS inbox;
 CREATE TABLE inbox (id SERIAL PRIMARY KEY, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN DEFAULT TRUE);
 
 
--- CREATE OR REPLACE FUNCTION trigger_receive()
--- RETURNS TRIGGER
--- LANGUAGE plpgsql
--- AS $BODY$
--- BEGIN 
--- END;
--- $BODY$;
-
+DROP TABLE IF EXISTS inbox;
 CREATE TABLE inbox (id SERIAL PRIMARY KEY, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN DEFAULT TRUE);
 
 CREATE OR REPLACE FUNCTION receive()
 RETURNS table (id integer, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN) AS $$ 
         COPY inbox (sender, msg, ts) 
-        FROM PROGRAM '/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 receive | jq ".[] | [.remote_address.address.Both[0], .content.text_message, .timestamp] | select(.[1] != null) | @csv"'
-        DELIMITER ',';
+        FROM PROGRAM '/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 receive | jq -r ".[] | [.remote_address.address.Both[0], .content.text_message, .timestamp] | select(.[1] != null) | @tsv"';
         UPDATE inbox SET unread=FALSE WHERE inbox.unread=TRUE RETURNING *;
 $$ LANGUAGE SQL;
 
