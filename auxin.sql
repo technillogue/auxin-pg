@@ -18,6 +18,7 @@ RETURNS text AS $$
     DECLARE 
         output TEXT;
     BEGIN
+        -- COPY requires a table, so let's make a temporary one
         CREATE TEMP TABLE tmp (content text);
         EXECUTE format('COPY tmp FROM PROGRAM %s;', quote_literal(program));
         SELECT content FROM tmp INTO output;
@@ -39,6 +40,7 @@ LANGUAGE plpgsql;
 
 DROP TABLE IF EXISTS commands;
 CREATE TABLE commands (name TEXT, fn TEXT);
+-- name is the message string to match; fn is the name of the function
 INSERT INTO commands VALUES 
     ('printerfact', 'curl_printerfact'),
     ('intelfact', 'curl_intelfact'),
@@ -67,10 +69,12 @@ RETURNS text AS $$
             BEGIN 
                 EXECUTE format('select %s(%s)', fn, quote_literal(message)) INTO output;
             EXCEPTION WHEN OTHERS THEN
+                -- something went wrong! 
                 GET STACKED DIAGNOSTICS 
                     error_text = MESSAGE_TEXT,
                     error_context = PG_EXCEPTION_CONTEXT;
                 RAISE NOTICE 'error in message dispatch: %, %', error_text, error_context;
+                -- send error to admin
                 INSERT INTO outbox (msg, dest) 
                 VALUES (format('error: %s, %s', error_text, error_context), '+16176088864');
                 output := 'Sorry, something went wrong';
@@ -89,6 +93,7 @@ LANGUAGE plpgsql
 AS $BODY$
 BEGIN 
     NEW.ts := get_output(
+        -- compose an auxin-cli invocation to send a message, escaping '
         format(
             $$/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 send -m '%s' %s$$,
             regexp_replace(NEW.msg, $$'$$, $$\'$$),  -- my poor syntax highlighter'
@@ -103,6 +108,7 @@ DROP TRIGGER IF EXISTS send ON outbox;
 CREATE TRIGGER send BEFORE INSERT ON outbox FOR EACH ROW EXECUTE PROCEDURE trigger_send();
 
 CREATE OR REPLACE FUNCTION handle_messages() RETURNS void AS $$
+    -- reply to each received message with the results of dispatch_message
     INSERT INTO outbox (dest, msg) 
     SELECT 
         inbox.sender,
@@ -113,6 +119,8 @@ $$ LANGUAGE SQL;
 
 CREATE OR REPLACE FUNCTION repeatedly_handle_messages() RETURNS void AS $$
     BEGIN 
+        -- i was hoping to handle_messages() four times a second, 
+        -- but it seems to actually be executed after finishing every sleep? :(
         FOR i IN 1..4 LOOP
             PERFORM handle_messages();
             RAISE NOTICE '% : handled messages', clock_timestamp();
