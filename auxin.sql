@@ -1,8 +1,16 @@
 --COPY (select datastore from signal_accounts where id='<number>') TO PROGRAM 'tax x';
 --COPY signal_accounts FROM PROGRAM 'tar xf data'
 
-DROP TABLE IF EXISTS outbox;
-CREATE TABLE outbox (id SERIAL PRIMARY KEY, msg TEXT, dest TEXT, ts TEXT);
+DROP TABLE IF EXISTS inbox;
+CREATE TABLE inbox (id SERIAL PRIMARY KEY, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN DEFAULT TRUE);
+
+CREATE OR REPLACE FUNCTION receive()
+RETURNS table (id integer, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN) AS $$ 
+    COPY inbox (sender, msg, ts) 
+    FROM PROGRAM '/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 receive | jq -r ".[] | [.remote_address.address.Both[0], .content.text_message, .timestamp] | select(.[1] != null) | @tsv"';
+    UPDATE inbox SET unread=FALSE WHERE inbox.unread=TRUE 
+    RETURNING *;
+$$ LANGUAGE SQL;
 
 
 CREATE OR REPLACE FUNCTION get_output(program TEXT)
@@ -18,13 +26,62 @@ RETURNS text AS $$
     END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION curl_printerfact() RETURNS text AS $$
+CREATE OR REPLACE FUNCTION curl_printerfact(msg text) RETURNS text AS $$
     select get_output('curl https://colbyolson.com/printers');
-$$ LANGUAGE SQL
+$$ LANGUAGE SQL;
 
-CREATE OR REPLACE FUNCTION curl_intelfact() RETURNS text AS $$
+CREATE OR REPLACE FUNCTION curl_intelfact(msg text) RETURNS text AS $$
     select get_output('curl https://intelligence.sometimes.workers.dev');
-$$ LANGUAGE SQL
+$$ LANGUAGE SQL;
+
+CREATE OR REPLACE FUNCTION echo(msg text) RETURNS text AS 'BEGIN RETURN msg; END;'
+LANGUAGE plpgsql; 
+
+DROP TABLE IF EXISTS commands;
+CREATE TABLE commands (name TEXT, fn TEXT);
+INSERT INTO commands VALUES 
+    ('printerfact', 'curl_printerfact'),
+    ('intelfact', 'curl_intelfact'),
+    ('ping', 'echo');
+
+CREATE OR REPLACE FUNCTION dispatch_message(message TEXT) 
+RETURNS text AS $$ 
+    DECLARE 
+        output TEXT;
+        fn TEXT;
+        error_text TEXT;
+        error_context TEXT;
+    BEGIN
+        SELECT commands.fn
+        FROM commands 
+        WHERE message ILIKE '%' || name || '%' 
+        LIMIT 1
+        INTO fn;
+        IF NOT FOUND THEN
+            RAISE NOTICE 'no command found for message %', message;
+            SELECT format('Sorry, valid commands are: %s', string_agg(commands.name, ', '))
+            FROM commands
+            INTO output;
+        ELSE 
+            RAISE NOTICE 'found command for message %: %', message, fn;
+            BEGIN 
+                EXECUTE format('select %s(%s)', fn, quote_literal(message)) INTO output;
+            EXCEPTION WHEN OTHERS THEN
+                GET STACKED DIAGNOSTICS 
+                    error_text = MESSAGE_TEXT,
+                    error_context = PG_EXCEPTION_CONTEXT;
+                RAISE NOTICE 'error in message dispatch: %, %', error_text, error_context;
+                INSERT INTO outbox (msg, dest) 
+                VALUES (format('error: %s, %s', error_text, error_context), '+16176088864');
+                output := 'Sorry, something went wrong';
+            END; 
+        END IF;
+        RETURN output;
+    END;
+$$ LANGUAGE plpgsql;
+
+DROP TABLE IF EXISTS outbox;
+CREATE TABLE outbox (id SERIAL PRIMARY KEY, msg TEXT, dest TEXT, ts TEXT);
 
 CREATE OR REPLACE FUNCTION trigger_send()
 RETURNS TRIGGER
@@ -34,10 +91,10 @@ BEGIN
     NEW.ts := get_output(
         format(
             $$/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 send -m '%s' %s$$,
-            NEW.msg, 
+            regexp_replace(NEW.msg, $$'$$, $$\'$$),  -- my poor syntax highlighter'
             quote_ident(NEW.dest)
         )
-    );
+    ); -- this ought to strip 'Successfully sent Signal message with timestamp: '
     RETURN NEW;
 END;
 $BODY$;
@@ -45,49 +102,25 @@ $BODY$;
 DROP TRIGGER IF EXISTS send ON outbox;
 CREATE TRIGGER send BEFORE INSERT ON outbox FOR EACH ROW EXECUTE PROCEDURE trigger_send();
 
-DROP TABLE IF EXISTS inbox;
-CREATE TABLE inbox (id SERIAL PRIMARY KEY, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN DEFAULT TRUE);
-
-CREATE OR REPLACE FUNCTION receive()
-RETURNS table (id integer, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN) AS $$ 
-    COPY inbox (sender, msg, ts) 
-    FROM PROGRAM '/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 receive | jq -r ".[] | [.remote_address.address.Both[0], .content.text_message, .timestamp] | select(.[1] != null) | @tsv"';
-    UPDATE inbox SET unread=FALSE WHERE inbox.unread=TRUE RETURNING *;
-$$ LANGUAGE SQL;
-
-
-CREATE TABLE IF NOT EXISTS commands (name TEXT, fn TEXT)
-
-CREATE OR REPLACE FUNCTION call_fn_with_arg(query TEXT, arg TEXT) 
-RETURNS text AS $$ 
-    DECLARE 
-        output TEXT;
-    BEGIN
-        CREATE TEMP TABLE tmp_call (result text);
-        EXECUTE format('INSERT INTO tmp_call select %s(%s)', query, arg);
-        SELECT result FROM tmp_call INTO output;
-        DROP TABLE tmp_call;
-        RETURN output;
-    END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION dispatch_message(message TEXT) RETURNS TEXT as $$
-    BEGIN
-        match := select fn from commands where message ilike '%' || name || '%' limit 1
-        return cas 
 CREATE OR REPLACE FUNCTION handle_messages() RETURNS void AS $$
     INSERT INTO outbox (dest, msg) 
     SELECT 
-        sender,
-        CASE
-            WHEN msg ILIKE '%printerfact%' THEN pgxr_printerfact()
-            WHEN msg ILIKE '%ping%' THEN msg
-            ELSE 'valid commands are printerfact and ping'
-        END
-    FROM receive()
---    RETURNING *;
+        inbox.sender,
+        dispatch_message(inbox.msg)
+    FROM receive() AS inbox
+    RETURNING *;
 $$ LANGUAGE SQL; 
 
+CREATE OR REPLACE FUNCTION repeatedly_handle_messages() RETURNS void AS $$
+    BEGIN 
+        FOR i IN 1..4 LOOP
+            PERFORM handle_messages();
+            RAISE NOTICE '% : handled messages', clock_timestamp();
+            PERFORM pg_sleep(0.2);
+        END LOOP;
+    END;
+$$ LANGUAGE plpgsql;
+        
 CREATE EXTENSION IF NOT EXISTS pg_cron;
 SELECT cron.unschedule(jobid) FROM cron.job ;
-SELECT cron.schedule(job_name:='handle_messages', schedule:='* * * * *', command:='select handle_messages()')
+SELECT cron.schedule(job_name:='handle_messages', schedule:='* * * * *', command:='select repeatedly_handle_messages()')
