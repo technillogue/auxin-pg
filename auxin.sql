@@ -4,6 +4,7 @@
 DROP TABLE IF EXISTS outbox;
 CREATE TABLE outbox (id SERIAL PRIMARY KEY, msg TEXT, dest TEXT, ts TEXT);
 
+
 CREATE OR REPLACE FUNCTION get_output(program TEXT)
 RETURNS text AS $$ 
     DECLARE 
@@ -15,7 +16,15 @@ RETURNS text AS $$
         DROP TABLE tmp;
         RETURN output;
     END;
-$$ LANGUAGE plpgsql VOLATILE;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION curl_printerfact() RETURNS text AS $$
+    select get_output('curl https://colbyolson.com/printers');
+$$ LANGUAGE SQL
+
+CREATE OR REPLACE FUNCTION curl_intelfact() RETURNS text AS $$
+    select get_output('curl https://intelligence.sometimes.workers.dev');
+$$ LANGUAGE SQL
 
 CREATE OR REPLACE FUNCTION trigger_send()
 RETURNS TRIGGER
@@ -24,7 +33,7 @@ AS $BODY$
 BEGIN 
     NEW.ts := get_output(
         format(
-            '/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 send -m "%s" %s',
+            $$/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 send -m '%s' %s$$,
             NEW.msg, 
             quote_ident(NEW.dest)
         )
@@ -46,6 +55,26 @@ RETURNS table (id integer, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN) AS $$
     UPDATE inbox SET unread=FALSE WHERE inbox.unread=TRUE RETURNING *;
 $$ LANGUAGE SQL;
 
+
+CREATE TABLE IF NOT EXISTS commands (name TEXT, fn TEXT)
+
+CREATE OR REPLACE FUNCTION call_fn_with_arg(query TEXT, arg TEXT) 
+RETURNS text AS $$ 
+    DECLARE 
+        output TEXT;
+    BEGIN
+        CREATE TEMP TABLE tmp_call (result text);
+        EXECUTE format('INSERT INTO tmp_call select %s(%s)', query, arg);
+        SELECT result FROM tmp_call INTO output;
+        DROP TABLE tmp_call;
+        RETURN output;
+    END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION dispatch_message(message TEXT) RETURNS TEXT as $$
+    BEGIN
+        match := select fn from commands where message ilike '%' || name || '%' limit 1
+        return cas 
 CREATE OR REPLACE FUNCTION handle_messages() RETURNS void AS $$
     INSERT INTO outbox (dest, msg) 
     SELECT 
@@ -55,7 +84,8 @@ CREATE OR REPLACE FUNCTION handle_messages() RETURNS void AS $$
             WHEN msg ILIKE '%ping%' THEN msg
             ELSE 'valid commands are printerfact and ping'
         END
-    FROM receive();
+    FROM receive()
+--    RETURNING *;
 $$ LANGUAGE SQL; 
 
 CREATE EXTENSION IF NOT EXISTS pg_cron;
