@@ -128,3 +128,6 @@ CREATE OR REPLACE FUNCTION repeatedly_handle_messages() RETURNS void AS $$
 $$ LANGUAGE plpgsql;
 
 ALTER SYSTEM SET shared_preload_libraries = 'pg_cron';
+-- after this, 02-restart.sh restarts to load pg_cron, 
+-- then 03-load-cron.sql schedules repeatdly_handle_messages(), 
+-- then 04-get-datastore.sh downloads a datastore and sets up symlinks in /tmp/local-signal

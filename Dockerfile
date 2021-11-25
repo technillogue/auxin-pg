@@ -50,7 +50,7 @@ RUN mkdir python
 COPY --from=builder /app/target/release/auxin-cli ./python/auxin-cli
 COPY --from=libbuilder /app/venv/lib/python3.9/site-packages ./python/
 COPY ./datastore.py ./utils.py ./pghelp.py ./python/
-COPY ./01-auxin.sql ./02-restart.sh ./03-load-cron.sql ./04-get-datastore.sh /docker-entrypoint-initdb.d/
-#COPY ./entrypoint.sh ./load_cron.sql /var/lib/postgresql/
-#ENTRYPOINT ["/bin/bash", "/var/lib/postgresql/entrypoint.sh"]
+COPY ./01-auxin.sql ./02-restart.sh ./03-load-cron.sql /docker-entrypoint-initdb.d/
+COPY ./entrypoint.sh /var/lib/postgresql/
+ENTRYPOINT ["/bin/bash", "/var/lib/postgresql/entrypoint.sh"]
 #RUN sh -c 'postgres' & sleep 1 && psql -f /auxin.sql
