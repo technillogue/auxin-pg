@@ -1,6 +1,5 @@
 --COPY (select datastore from signal_accounts where id='<number>') TO PROGRAM 'tax x';
 --COPY signal_accounts FROM PROGRAM 'tar xf data'
-
 -- table of contents: receiving, commands, command dispatch, sending, handling messages, cron
 
 DROP TABLE IF EXISTS inbox;
@@ -56,6 +55,7 @@ RETURNS text AS $$
         error_text TEXT;
         error_context TEXT;
     BEGIN
+        RAISE NOTICE 'handling message %', message;
         SELECT commands.fn FROM commands WHERE message ILIKE commands.pattern 
         LIMIT 1 INTO fn;
         IF NOT FOUND THEN
@@ -64,19 +64,19 @@ RETURNS text AS $$
             FROM commands INTO output;
         ELSE 
             RAISE NOTICE 'found command for message %: %', message, fn;
-            BEGIN 
+--            BEGIN 
                 EXECUTE format('select %s(%s)', fn, quote_literal(message)) INTO output;
-            EXCEPTION WHEN OTHERS THEN
-                -- something went wrong! 
-                GET STACKED DIAGNOSTICS 
-                    error_text = MESSAGE_TEXT,
-                    error_context = PG_EXCEPTION_CONTEXT;
-                RAISE NOTICE 'error in message dispatch: %, %', error_text, error_context;
-                -- send error to admin
-                INSERT INTO outbox (msg, dest) 
-                VALUES (format('error: %s, %s', error_text, error_context), '+16176088864');
-                output := 'Sorry, something went wrong';
-            END; 
+--            EXCEPTION WHEN OTHERS THEN
+--                -- something went wrong! 
+--                GET STACKED DIAGNOSTICS 
+--                    error_text = MESSAGE_TEXT,
+--                    error_context = PG_EXCEPTION_CONTEXT;
+--                RAISE NOTICE 'error in message dispatch: %, %', error_text, error_context;
+--                -- send error to admin
+--                INSERT INTO outbox (msg, dest) 
+--                VALUES (format('error: %s, %s', error_text, error_context), '+16176088864');
+--                output := 'Sorry, something went wrong';
+--            END; 
         END IF;
         RETURN output;
     END;
@@ -105,6 +105,22 @@ $BODY$;
 DROP TRIGGER IF EXISTS send ON outbox;
 CREATE TRIGGER send BEFORE INSERT ON outbox FOR EACH ROW EXECUTE PROCEDURE trigger_send();
 
+CREATE EXTENSION plpython3u;
+CREATE OR REPLACE FUNCTION trigger_upload() RETURNS TRIGGER AS $$
+    import asyncio, logging, os, sys
+    logging.info("in trigger_upload()")
+    sys.path.append("/var/lib/postgresql/python")
+    import datastore
+    os.chdir("/tmp/local-signal")
+
+    async def upload():
+        await datastore.SignalDatastore("+12406171474", False).upload()
+    return asyncio.run(upload())
+$$ LANGUAGE plpython3u;
+
+CREATE TRIGGER upload AFTER INSERT ON outbox FOR EACH STATEMENT EXECUTE PROCEDURE trigger_upload();
+CREATE TRIGGER upload AFTER INSERT ON inbox FOR EACH STATEMENT EXECUTE PROCEDURE trigger_upload();
+
 CREATE OR REPLACE FUNCTION handle_messages() RETURNS void AS $$
     -- reply to each received message with the results of dispatch_message
     INSERT INTO outbox (dest, msg) 
@@ -130,4 +146,4 @@ $$ LANGUAGE plpgsql;
 ALTER SYSTEM SET shared_preload_libraries = 'pg_cron';
 -- after this, 02-restart.sh restarts to load pg_cron, 
 -- then 03-load-cron.sql schedules repeatdly_handle_messages(), 
--- then 04-get-datastore.sh downloads a datastore and sets up symlinks in /tmp/local-signal
+-- //then 04-get-datastore.sh downloads a datastore and sets up symlinks in /tmp/local-signal

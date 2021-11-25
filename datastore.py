@@ -84,7 +84,7 @@ class SignalDatastore:
     Download, claim, mount, and sync a signal datastore
     """
 
-    def __init__(self, number: str):
+    def __init__(self, number: str, tmpdir=True):
         self.account_interface = get_account_interface()
         formatted_number = utils.signal_format(number)
         if isinstance(formatted_number, str):
@@ -94,7 +94,8 @@ class SignalDatastore:
         logging.info("SignalDatastore number is %s", self.number)
         self.filepath = "data/" + number
         # await self.account_interface.create_table()
-        setup_tmpdir()  # shouldn't do anything if not running locally
+        if tmpdir:
+            setup_tmpdir()  # shouldn't do anything if not running locally
 
     def is_registered_locally(self) -> bool:
         try:
@@ -194,11 +195,11 @@ class SignalDatastore:
         data = buffer.read()
         return data
 
-    async def upload(self) -> Any:
+    async def upload(self) -> float:
         """Puts account datastore in postgresql."""
         data = self.tarball_data()
         if not data:
-            return
+            return 0.0
         kb = round(len(data) / 1024, 1)
         # maybe something like:
         # upload and return registered timestamp. write timestamp locally. when uploading, check that the last_updated_ts in postgres matches the file
@@ -207,7 +208,7 @@ class SignalDatastore:
         # open("last_uploaded_checksum", "w").write(zlib.crc32(buffer.seek(0).read()))
         await self.account_interface.upload(self.number, data)
         logging.debug("saved %s kb of tarballed datastore to supabase", kb)
-        return
+        return kb
 
     async def mark_freed(self) -> list:
         """Marks account as freed in PG database."""
@@ -220,11 +221,12 @@ def setup_tmpdir() -> None:
     if utils.ROOT_DIR == ".":
         logging.warning("not setting up tmpdir")
         return
-    if utils.ROOT_DIR == "/tmp/local-signal/":
-        try:
-            shutil.rmtree(utils.ROOT_DIR)
-        except (FileNotFoundError, OSError) as e:
-            logging.warning("couldn't remove rootdir: %s", e)
+    logging.info("setitng up tmpdir")
+    # if utils.ROOT_DIR == "/tmp/local-signal/":
+    #     try:
+    #         shutil.rmtree(utils.ROOT_DIR)
+    #     except (FileNotFoundError, OSError) as e:
+    #         logging.warning("couldn't remove rootdir: %s", e)
     (Path(utils.ROOT_DIR) / "data").mkdir(exist_ok=True, parents=True)
     # assume we're running in the repo
     sigcli = utils.get_secret("SIGNAL_CLI_PATH") or "auxin-cli"
@@ -366,6 +368,7 @@ async def sync(ns: argparse.Namespace) -> None:
 
 
 upload_parser = subparser.add_parser("upload")
+upload_parser.add_argument("--no_tmpdir", "-n", action="store_false")
 upload_parser.add_argument("--path")
 upload_parser.add_argument("--number")
 # download_parser = subparser.add_parser("download")
@@ -385,7 +388,7 @@ if __name__ == "__main__":
             num = args.number
         else:
             num = os.listdir("data")[0]
-        store = SignalDatastore(num)
+        store = SignalDatastore(num, args.no_tmpdir)
         asyncio.run(store.upload())
     else:
         print("not implemented")

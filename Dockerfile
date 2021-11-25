@@ -41,7 +41,7 @@ RUN VIRTUAL_ENV=/app/venv pipenv install
 
 FROM postgres:11-bullseye
 ENV POSTGRES_HOST_AUTH_METHOD=trust 
-RUN apt-get update && apt-get -yy install postgresql-11-cron curl python3.9  jq
+RUN apt-get update && apt-get -yy install postgresql-11-cron postgresql-plpython3-11 curl python3.9 jq
 RUN apt-get clean autoclean && apt-get autoremove --yes && rm -rf /var/lib/{apt,dpkg,cache,log}/
 RUN chmod -R 777 /docker-entrypoint-initdb.d/
 USER postgres

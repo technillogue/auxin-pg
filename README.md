@@ -43,3 +43,11 @@ GRANT USAGE ON SCHEMA cron TO marco;
 i also like pgcli. it requires psychopg, which needs `sudo apt install python3.9-dev libpq-dev`
 
 for running locally, stick a symlink to auxin-cli in /var/lib/postgresql/auxin-cli.
+
+
+---
+
+
+aspirational: don't use an external database for the datastore, probably use base64 tarballs, include an account registration script
+extra aspirational: store identity keys (json), group cache (binaries), identities (index, identityKey, trustLevel, addedTimestamp), prekeys (binary), signed prekeys (binary), recipient store (json), sessions (binary) in discrete tables, assemble an AuxinApp with AuxinState in pgxr
+
