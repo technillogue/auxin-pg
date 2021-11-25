@@ -1,13 +1,15 @@
 --COPY (select datastore from signal_accounts where id='<number>') TO PROGRAM 'tax x';
 --COPY signal_accounts FROM PROGRAM 'tar xf data'
 
+-- table of contents: receiving, commands, command dispatch, sending, handling messages, cron
+
 DROP TABLE IF EXISTS inbox;
 CREATE TABLE inbox (id SERIAL PRIMARY KEY, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN DEFAULT TRUE);
 
 CREATE OR REPLACE FUNCTION receive()
 RETURNS table (id integer, msg TEXT, sender TEXT, ts TEXT, unread BOOLEAN) AS $$ 
     COPY inbox (sender, msg, ts) 
-    FROM PROGRAM '/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 receive | jq -r ".[] | [.remote_address.address.Both[0], .content.text_message, .timestamp] | select(.[1] != null) | @tsv"';
+    FROM PROGRAM '/tmp/local-signal/auxin-cli -c /tmp/local-signal -u +12406171474 receive | jq -r ".[] | [.remote_address.address.Both[0], .content.text_message, .timestamp] | select(.[1] != null) | @tsv"';
     UPDATE inbox SET unread=FALSE WHERE inbox.unread=TRUE 
     RETURNING *;
 $$ LANGUAGE SQL;
@@ -39,12 +41,12 @@ CREATE OR REPLACE FUNCTION echo(msg text) RETURNS text AS 'BEGIN RETURN msg; END
 LANGUAGE plpgsql; 
 
 DROP TABLE IF EXISTS commands;
-CREATE TABLE commands (name TEXT, fn TEXT);
--- name is the message string to match; fn is the name of the function
+CREATE TABLE commands (pattern TEXT, fn TEXT);
+-- pattern is the message string to match; fn is the name of the function
 INSERT INTO commands VALUES 
-    ('printerfact', 'curl_printerfact'),
-    ('intelfact', 'curl_intelfact'),
-    ('ping', 'echo');
+    ('%printerfact%', 'curl_printerfact'),
+    ('%intelfact%', 'curl_intelfact'),
+    ('%ping%', 'echo');
 
 CREATE OR REPLACE FUNCTION dispatch_message(message TEXT) 
 RETURNS text AS $$ 
@@ -54,16 +56,12 @@ RETURNS text AS $$
         error_text TEXT;
         error_context TEXT;
     BEGIN
-        SELECT commands.fn
-        FROM commands 
-        WHERE message ILIKE '%' || name || '%' 
-        LIMIT 1
-        INTO fn;
+        SELECT commands.fn FROM commands WHERE message ILIKE commands.pattern 
+        LIMIT 1 INTO fn;
         IF NOT FOUND THEN
             RAISE NOTICE 'no command found for message %', message;
-            SELECT format('Sorry, valid commands are: %s', string_agg(commands.name, ', '))
-            FROM commands
-            INTO output;
+            SELECT format('Sorry, valid commands are: %s', string_agg(commands.pattern, ', '))
+            FROM commands INTO output;
         ELSE 
             RAISE NOTICE 'found command for message %: %', message, fn;
             BEGIN 
@@ -95,7 +93,7 @@ BEGIN
     NEW.ts := get_output(
         -- compose an auxin-cli invocation to send a message, escaping '
         format(
-            $$/home/sylv/.local/bin/auxin-cli -c . -u +447927948360 send -m '%s' %s$$,
+            $$/tmp/local-signal/auxin-cli -c /tmp/local-signal -u +12406171474 send -m '%s' %s$$,
             regexp_replace(NEW.msg, $$'$$, $$\'$$),  -- my poor syntax highlighter'
             quote_ident(NEW.dest)
         )
@@ -128,7 +126,5 @@ CREATE OR REPLACE FUNCTION repeatedly_handle_messages() RETURNS void AS $$
         END LOOP;
     END;
 $$ LANGUAGE plpgsql;
-        
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-SELECT cron.unschedule(jobid) FROM cron.job ;
-SELECT cron.schedule(job_name:='handle_messages', schedule:='* * * * *', command:='select repeatedly_handle_messages()')
+
+ALTER SYSTEM SET shared_preload_libraries = 'pg_cron';
