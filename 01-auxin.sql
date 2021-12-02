@@ -40,12 +40,34 @@ CREATE OR REPLACE FUNCTION echo(msg text) RETURNS text AS 'BEGIN RETURN msg; END
 LANGUAGE plpgsql; 
 
 DROP TABLE IF EXISTS commands;
-CREATE TABLE commands (pattern TEXT, fn TEXT);
--- pattern is the message string to match; fn is the name of the function
+CREATE TABLE IF NOT EXISTS commands (pattern TEXT, fn TEXT);
 INSERT INTO commands VALUES 
     ('%printerfact%', 'curl_printerfact'),
     ('%intelfact%', 'curl_intelfact'),
     ('%ping%', 'echo');
+
+
+CREATE OR REPLACE FUNCTION dispatch_message(message TEXT) 
+RETURNS text AS $$ 
+    DECLARE output TEXT; fn TEXT;
+    BEGIN
+        SELECT commands.fn FROM commands WHERE message ILIKE commands.pattern 
+        LIMIT 1 INTO fn;
+        IF NOT FOUND THEN
+            SELECT format('Sorry, valid commands are: %s', string_agg(commands.pattern, ', '))
+            FROM commands INTO output;
+        ELSE 
+            EXECUTE format('select %s(%s)', fn, quote_literal(message)) INTO output;
+        END IF;
+        RETURN output;
+    END;
+$$ LANGUAGE plpgsql;
+
+
+
+
+
+
 
 CREATE OR REPLACE FUNCTION dispatch_message(message TEXT) 
 RETURNS text AS $$ 
@@ -130,6 +152,17 @@ CREATE OR REPLACE FUNCTION handle_messages() RETURNS void AS $$
     FROM receive() AS inbox
     RETURNING *;
 $$ LANGUAGE SQL; 
+
+create table config (running boolean);
+insert into config values (true);
+create or replace function handler_loop returns setof record as $$
+    begin
+        while (select running from config) loop
+            perform handle_messages();
+            perform pg_sleep(.175);
+        end loop;
+    end;
+$$ language plpgsql;
 
 CREATE OR REPLACE FUNCTION repeatedly_handle_messages() RETURNS void AS $$
     BEGIN 
