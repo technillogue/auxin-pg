@@ -1,5 +1,9 @@
 ## postgres: my favorite signal client
 
+![sending a message](https://github.com/technillogue/auxin-pg/blob/master/pictures/example.png?raw=true)
+![handling messages](https://github.com/technillogue/auxin-pg/blob/master/pictures/handle.jpeg?raw=true)
+![run a bot](https://github.com/technillogue/auxin-pg/blob/master/pictures/cron.jpeg?raw=true)
+
 `docker build -t auxpg . && docker run --rm -it --env-file dev_secrets auxpg`
 
 requires auxin-cli, jq, pg\_cron, and either curl or pgxr and then pgxr\_printerfact.fs compiled and placed somewhere.
